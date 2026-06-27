@@ -103,16 +103,39 @@ function showLobby() {
 // ========================
 // WEBRTC
 // ========================
+let hostLocalDescription = null;
+
+function handleIncomingSignal(signalData) {
+  if (!peerConn || !signalData.from) return;
+  peerConn.setRemoteDescription(new RTCSessionDescription(signalData.signal))
+    .then(() => {
+      // If we already have a local description (we sent an offer), we need to set our answer
+      if (peerConn.localDescription) return;
+      // If we don't have a local description yet, we need to create an answer
+      return peerConn.createAnswer();
+    })
+    .then(answer => {
+      if (answer) {
+        return peerConn.setLocalDescription(answer);
+      }
+    })
+    .then(() => {
+      setTimeout(() => {
+        if (peerConn.localDescription && opponentSocketId) {
+          socket.emit('signal', { roomCode, targetSocketId: opponentSocketId, signal: peerConn.localDescription });
+        }
+      }, 500);
+    })
+    .catch(err => console.error('Signal handling error:', err));
+}
+
 function initHostWebRTC() {
   createPeerConnection();
   dataChannel = peerConn.createDataChannel('game');
   dataChannel.onopen = () => console.log('Host channel open');
   dataChannel.onmessage = (ev) => handlePeerMessage(JSON.parse(ev.data));
   peerConn.createOffer().then(o => peerConn.setLocalDescription(o)).then(() => {
-    setTimeout(() => {
-      if (peerConn.localDescription)
-        socket.emit('signal', { roomCode, targetSocketId: opponentSocketId, signal: peerConn.localDescription });
-    }, 1000);
+    hostLocalDescription = peerConn.localDescription;
   });
 }
 
@@ -127,18 +150,6 @@ function initJoinerWebRTC() {
     if (e.candidate && opponentSocketId)
       socket.emit('signal', { roomCode, targetSocketId: opponentSocketId, signal: e.candidate });
   };
-  socket.on('signal', (data) => {
-    if (data.from !== opponentSocketId) return;
-    peerConn.setRemoteDescription(new RTCSessionDescription(data.signal))
-      .then(() => peerConn.createAnswer())
-      .then(a => peerConn.setLocalDescription(a))
-      .then(() => {
-        setTimeout(() => {
-          if (peerConn.localDescription)
-            socket.emit('signal', { roomCode, targetSocketId: opponentSocketId, signal: peerConn.localDescription });
-        }, 1000);
-      });
-  });
 }
 
 // ========================
@@ -148,6 +159,15 @@ socket.on('player-joined', (data) => {
   opponentSocketId = data.socketId;
   btnStart.disabled = false;
   playerListEl.innerHTML += `<div class="player-item"><span>${data.name}</span></div>`;
+  // Send stored SDP offer now that we know the target
+  if (hostLocalDescription) {
+    socket.emit('signal', { roomCode, targetSocketId: opponentSocketId, signal: hostLocalDescription });
+    hostLocalDescription = null;
+  }
+});
+
+socket.on('signal', (data) => {
+  handleIncomingSignal(data);
 });
 
 socket.on('game-started', () => {
@@ -161,7 +181,7 @@ socket.on('player-left', () => { alert('Opponent left!'); location.reload(); });
 // ========================
 // PHYSICS ENGINE
 // ========================
-const GRAVITY = 0.05;
+const GRAVITY = 0.015;
 const RESTITUTION = 0.15;
 const FRICTION = 0.995;
 
@@ -312,6 +332,7 @@ function loop() {
   if (!gameActive) return;
   mergeQueue = [];
   stepPhysics(myCircles);
+  stepPhysics(enemyCircles);
   render();
   requestAnimationFrame(loop);
 }
@@ -330,8 +351,9 @@ function setNextFruit() {
 function dropFruit() {
   if (!gameActive || dropping) return;
   const f = FRUITS[current.index];
-  const x = Math.max(f.radius + WALL + 2, Math.min(CANVAS_W - WALL - 2, mouseX));
+  const x = Math.max(f.radius + WALL, Math.min(CANVAS_W - WALL - f.radius, mouseX));
   addCircle(myCircles, x, 50, f.radius, current.index);
+  sendPeer({ type: 'drop', x: x, y: 50, index: current.index });
   dropping = true;
   setTimeout(() => { dropping = false; setNextFruit(); spawnCurrent(); }, 700);
 }
@@ -398,7 +420,7 @@ function renderBoard(ctx, circles, isMy) {
 
   // Current fruit (only on my board)
   if (isMy && current && !dropping) {
-    const previewX = Math.max(current.radius + WALL + 2, Math.min(CANVAS_W - WALL - 2, mouseX));
+    const previewX = Math.max(current.radius + WALL, Math.min(CANVAS_W - WALL - current.radius, mouseX));
     ctx.strokeStyle = 'rgba(255,255,255,0.15)';
     ctx.lineWidth = 1;
     ctx.setLineDash([4, 4]);
@@ -451,6 +473,9 @@ function handlePeerMessage(msg) {
   } else if (msg.type === 'enemy-state') {
     // Full state sync
     enemyCircles = msg.circles;
+  } else if (msg.type === 'my-state') {
+    // Sync opponent's full circle state (periodic updates)
+    enemyCircles = msg.circles.map(c => ({ ...c, vx: 0, vy: 0, settled: false, id: Math.random() }));
   }
 }
 
@@ -460,13 +485,3 @@ setInterval(() => {
     sendPeer({ type: 'my-state', circles: myCircles.map(c => ({ x: c.x, y: c.y, r: c.r, idx: c.idx })) });
   }
 }, 500);
-
-// Handle enemy state
-const origHandlePeer = handlePeerMessage;
-handlePeerMessage = function(msg) {
-  if (msg.type === 'my-state') {
-    myCircles = msg.circles.map(c => ({ ...c, vx: 0, vy: 0 }));
-  } else {
-    origHandlePeer(msg);
-  }
-};
