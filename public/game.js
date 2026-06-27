@@ -272,6 +272,7 @@ function stepPhysics(arr) {
     }
   }
 
+  let merged = [];
   for (const [arr, a, b] of mergeQueue) {
     const newIdx = a.idx + 1;
     if (newIdx >= FRUITS.length) {
@@ -282,9 +283,11 @@ function stepPhysics(arr) {
       removeCircle(arr, a.id);
       removeCircle(arr, b.id);
       addCircle(arr, mx, my, FRUITS[newIdx].radius, newIdx);
+      merged.push(FRUITS[newIdx].points);
     }
   }
   mergeQueue = [];
+  return merged;
 }
 
 // ========================
@@ -344,8 +347,14 @@ function startGame() {
 function loop() {
   if (!gameActive) return;
   mergeQueue = [];
-  stepPhysics(myCircles);
+  const myMerged = stepPhysics(myCircles);
   stepPhysics(enemyCircles);
+  // Add points from merges and notify opponent
+  for (const pts of myMerged) {
+    score += pts;
+    updateScoreDisplay();
+    sendPeer({ type: 'merge', score: score });
+  }
   render();
   requestAnimationFrame(loop);
 }
@@ -500,8 +509,30 @@ function handlePeerMessage(msg) {
     enemyCurrent = msg;
     enemyDropping = false;
   } else if (msg.type === 'my-state') {
-    // Sync opponent's full circle state (periodic updates)
-    enemyCircles = msg.circles.map(c => ({ ...c, vx: 0, vy: 0, settled: false, id: Math.random() }));
+    // Sync opponent's full circle state with velocity (periodic updates)
+    // Build a map of opponent's circle IDs for matching
+    const byIdx = {};
+    for (const c of enemyCircles) {
+      const key = `${c.x.toFixed(1)}_${c.y.toFixed(1)}_${c.r}`;
+      byIdx[key] = c;
+    }
+    enemyCircles = msg.circles.map(c => {
+      const key = `${c.x.toFixed(1)}_${c.y.toFixed(1)}_${c.r}`;
+      const existing = byIdx[key];
+      if (existing) {
+        // Smooth velocity blend to prevent pops
+        const blend = 0.7;
+        return {
+          ...existing,
+          x: c.x, y: c.y,
+          vx: c.vx * blend + existing.vx * (1 - blend),
+          vy: c.vy * blend + existing.vy * (1 - blend),
+          r: c.r,
+          idx: c.idx
+        };
+      }
+      return { ...c, vx: 0, vy: 0, settled: false, id: Math.random() };
+    });
     // Also update opponent's preview state
     if (msg.current !== undefined) {
       enemyCurrent = msg.current;
@@ -520,9 +551,9 @@ setInterval(() => {
     }
     sendPeer({
       type: 'my-state',
-      circles: myCircles.map(c => ({ x: c.x, y: c.y, r: c.r, idx: c.idx })),
+      circles: myCircles.map(c => ({ x: c.x, y: c.y, vx: c.vx, vy: c.vy, r: c.r, idx: c.idx })),
       current: current ? { x: previewX, y: current.y, index: current.index, radius: current.radius } : null,
       dropping: dropping
     });
   }
-}, 500);
+}, 100);
