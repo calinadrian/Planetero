@@ -398,13 +398,14 @@ function renderBoard(ctx, circles, isMy) {
 
   // Current fruit (only on my board)
   if (isMy && current && !dropping) {
+    const previewX = Math.max(current.radius + WALL + 2, Math.min(CANVAS_W - WALL - 2, mouseX));
     ctx.strokeStyle = 'rgba(255,255,255,0.15)';
     ctx.lineWidth = 1;
     ctx.setLineDash([4, 4]);
-    ctx.beginPath(); ctx.moveTo(current.x, current.y + current.radius);
-    ctx.lineTo(current.x, CANVAS_H - WALL); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(previewX, current.y + current.radius);
+    ctx.lineTo(previewX, CANVAS_H - WALL); ctx.stroke();
     ctx.setLineDash([]);
-    drawCircle(ctx, current.x, current.y, current.radius, current.index);
+    drawCircle(ctx, previewX, current.y, current.radius, current.index);
   }
 }
 
