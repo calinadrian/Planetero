@@ -509,31 +509,7 @@ function handlePeerMessage(msg) {
     enemyCurrent = msg;
     enemyDropping = false;
   } else if (msg.type === 'my-state') {
-    // Sync opponent's full circle state with velocity (periodic updates)
-    // Build a map of opponent's circle IDs for matching
-    const byIdx = {};
-    for (const c of enemyCircles) {
-      const key = `${c.x.toFixed(1)}_${c.y.toFixed(1)}_${c.r}`;
-      byIdx[key] = c;
-    }
-    enemyCircles = msg.circles.map(c => {
-      const key = `${c.x.toFixed(1)}_${c.y.toFixed(1)}_${c.r}`;
-      const existing = byIdx[key];
-      if (existing) {
-        // Smooth velocity blend to prevent pops
-        const blend = 0.7;
-        return {
-          ...existing,
-          x: c.x, y: c.y,
-          vx: c.vx * blend + existing.vx * (1 - blend),
-          vy: c.vy * blend + existing.vy * (1 - blend),
-          r: c.r,
-          idx: c.idx
-        };
-      }
-      return { ...c, vx: 0, vy: 0, settled: false, id: Math.random() };
-    });
-    // Also update opponent's preview state
+    // Only update preview state from periodic messages (circles run on independent physics)
     if (msg.current !== undefined) {
       enemyCurrent = msg.current;
       enemyDropping = msg.dropping;
