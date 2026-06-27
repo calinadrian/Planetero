@@ -1,22 +1,23 @@
 // ========================
 // CONFIGURATION
 // ========================
-const CANVAS_W = 400;
-const CANVAS_H = 560;
+const CANVAS_W = 380;
+const CANVAS_H = 520;
 const WALL = 20;
 const GAME_TIME = 180;
 
 const FRUITS = [
-  { radius: 15, color: '#ff4757', points: 1,  label: '🍒' },
-  { radius: 20, color: '#ff6b81', points: 2,  label: '🍓' },
-  { radius: 26, color: '#a55eea', points: 3,  label: '🍇' },
-  { radius: 32, color: '#ffa502', points: 5,  label: '🍊' },
-  { radius: 39, color: '#ff4757', points: 8,  label: '🍎' },
-  { radius: 46, color: '#ff6348', points: 13, label: '🍅' },
-  { radius: 54, color: '#ffd32a', points: 21, label: '🍐' },
-  { radius: 62, color: '#ff9ff3', points: 34, label: '🍑' },
-  { radius: 72, color: '#f9ca24', points: 55, label: '🍍' },
-  { radius: 82, color: '#2ecc71', points: 89, label: '🍉' },
+  { radius: 14, color: '#ff4757', points: 1 },
+  { radius: 19, color: '#ff6b81', points: 2 },
+  { radius: 25, color: '#a55eea', points: 3 },
+  { radius: 31, color: '#ffa502', points: 5 },
+  { radius: 38, color: '#ff4757', points: 8 },
+  { radius: 44, color: '#ff6348', points: 13 },
+  { radius: 52, color: '#ffd32a', points: 21 },
+  { radius: 60, color: '#ff9ff3', points: 34 },
+  { radius: 70, color: '#f9ca24', points: 55 },
+  { radius: 80, color: '#2ecc71', points: 89 },
+  { radius: 90, color: '#00d2d3', points: 144 },
 ];
 
 // ========================
@@ -160,13 +161,14 @@ socket.on('player-left', () => { alert('Opponent left!'); location.reload(); });
 // ========================
 // PHYSICS ENGINE
 // ========================
-const GRAVITY = 0.4;
-const RESTITUTION = 0.2;
-const FRICTION = 0.98;
+const GRAVITY = 0.05;
+const RESTITUTION = 0.15;
+const FRICTION = 0.995;
 
-let canvas, ctx;
-let circles = []; // physics bodies
-let current = null; // fruit at top
+let canvasMy, ctxMy, canvasEnemy, ctxEnemy;
+let myCircles = [];
+let enemyCircles = [];
+let current = null;
 let dropping = false;
 let mouseX = CANVAS_W / 2;
 let score = 0, opponentScore = 0;
@@ -176,60 +178,55 @@ let gameActive = false;
 let nextIdx = 0;
 let mergeQueue = [];
 
-function addCircle(x, y, r, idx) {
-  circles.push({ x, y, vx: 0, vy: 0, r, idx, settled: false, id: Math.random() });
+function addCircle(arr, x, y, r, idx) {
+  arr.push({ x, y, vx: 0, vy: 0, r, idx, settled: false, id: Math.random() });
 }
 
-function removeCircle(id) {
-  circles = circles.filter(c => c.id !== id);
+function removeCircle(arr, id) {
+  const i = arr.findIndex(c => c.id === id);
+  if (i !== -1) arr.splice(i, 1);
 }
 
-function stepPhysics() {
-  // Gravity & movement
-  for (const c of circles) {
+function stepPhysics(arr) {
+  for (const c of arr) {
     c.vy += GRAVITY;
     c.vx *= FRICTION;
     c.x += c.vx;
     c.y += c.vy;
-    c.settled = false;
   }
 
-  // Wall collisions
-  for (const c of circles) {
-    // Ground
+  for (const c of arr) {
     if (c.y + c.r > CANVAS_H - WALL) {
       c.y = CANVAS_H - WALL - c.r;
       c.vy *= -RESTITUTION;
-      if (Math.abs(c.vy) < 1) { c.vy = 0; c.settled = true; }
+      if (Math.abs(c.vy) < 0.5) { c.vy = 0; }
     }
-    // Left wall
     if (c.x - c.r < WALL) {
       c.x = WALL + c.r;
       c.vx *= -RESTITUTION;
     }
-    // Right wall
     if (c.x + c.r > CANVAS_W - WALL) {
       c.x = CANVAS_W - WALL - c.r;
       c.vx *= -RESTITUTION;
     }
+    // Dampen tiny velocities to prevent jitter
+    if (Math.abs(c.vx) < 0.01) c.vx = 0;
+    if (Math.abs(c.vy) < 0.01 && c.y + c.r >= CANVAS_H - WALL - 1) c.vy = 0;
   }
 
-  // Circle-circle collisions
-  for (let i = 0; i < circles.length; i++) {
-    for (let j = i + 1; j < circles.length; j++) {
-      const a = circles[i], b = circles[j];
+  for (let i = 0; i < arr.length; i++) {
+    for (let j = i + 1; j < arr.length; j++) {
+      const a = arr[i], b = arr[j];
       const dx = b.x - a.x, dy = b.y - a.y;
       const dist = Math.sqrt(dx * dx + dy * dy);
       const minDist = a.r + b.r;
 
       if (dist < minDist && dist > 0) {
-        // Check merge
         if (a.idx === b.idx && !a.merged && !b.merged) {
-          mergeQueue.push([a, b]);
+          mergeQueue.push([arr, a, b]);
           continue;
         }
 
-        // Separate
         const nx = dx / dist, ny = dy / dist;
         const overlap = minDist - dist;
         a.x -= nx * overlap / 2;
@@ -237,39 +234,31 @@ function stepPhysics() {
         b.x += nx * overlap / 2;
         b.y += ny * overlap / 2;
 
-        // Elastic collision response
         const dvx = a.vx - b.vx, dvy = a.vy - b.vy;
         const dvDotN = dvx * nx + dvy * ny;
         if (dvDotN > 0) {
           const massA = a.r * a.r, massB = b.r * b.r;
           const totalMass = massA + massB;
-          const impulse = 2 * dvDotN / totalMass;
-          a.vx -= impulse * massB * nx * RESTITUTION;
-          a.vy -= impulse * massB * ny * RESTITUTION;
-          b.vx += impulse * massA * nx * RESTITUTION;
-          b.vy += impulse * massA * ny * RESTITUTION;
+          const impulse = (1 + RESTITUTION) * dvDotN / totalMass;
+          a.vx -= impulse * massB * nx;
+          a.vy -= impulse * massB * ny;
+          b.vx += impulse * massA * nx;
+          b.vy += impulse * massA * ny;
         }
       }
     }
   }
 
-  // Process merges
-  for (const [a, b] of mergeQueue) {
+  for (const [arr, a, b] of mergeQueue) {
     const newIdx = a.idx + 1;
     if (newIdx >= FRUITS.length) {
-      score += FRUITS[newIdx - 1].points * 2;
-      updateScoreDisplay();
-      removeCircle(a.id);
-      removeCircle(b.id);
-      sendPeer({ type: 'merge', score });
+      removeCircle(arr, a.id);
+      removeCircle(arr, b.id);
     } else {
       const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
-      removeCircle(a.id);
-      removeCircle(b.id);
-      addCircle(mx, my, FRUITS[newIdx].radius, newIdx);
-      score += FRUITS[newIdx].points;
-      updateScoreDisplay();
-      sendPeer({ type: 'merge', score });
+      removeCircle(arr, a.id);
+      removeCircle(arr, b.id);
+      addCircle(arr, mx, my, FRUITS[newIdx].radius, newIdx);
     }
   }
   mergeQueue = [];
@@ -279,30 +268,35 @@ function stepPhysics() {
 // GAME
 // ========================
 function startGame() {
-  canvas = document.getElementById('game-canvas');
-  canvas.width = CANVAS_W;
-  canvas.height = CANVAS_H;
-  ctx = canvas.getContext('2d');
+  canvasMy = document.getElementById('canvas-my');
+  canvasMy.width = CANVAS_W;
+  canvasMy.height = CANVAS_H;
+  ctxMy = canvasMy.getContext('2d');
+
+  canvasEnemy = document.getElementById('canvas-enemy');
+  canvasEnemy.width = CANVAS_W;
+  canvasEnemy.height = CANVAS_H;
+  ctxEnemy = canvasEnemy.getContext('2d');
 
   score = 0; opponentScore = 0; timeLeft = GAME_TIME;
-  circles = []; gameActive = true;
+  myCircles = []; enemyCircles = []; gameActive = true;
   updateScoreDisplay();
   updateTimerDisplay();
   setNextFruit();
   spawnCurrent();
 
-  // Controls
-  document.addEventListener('mousemove', (e) => {
-    const rect = canvas.getBoundingClientRect();
+  // My board controls
+  canvasMy.addEventListener('mousemove', (e) => {
+    const rect = canvasMy.getBoundingClientRect();
     mouseX = (e.clientX - rect.left) * (CANVAS_W / rect.width);
   });
-  document.addEventListener('touchmove', (e) => {
+  canvasMy.addEventListener('touchmove', (e) => {
     e.preventDefault();
-    const rect = canvas.getBoundingClientRect();
+    const rect = canvasMy.getBoundingClientRect();
     mouseX = (e.touches[0].clientX - rect.left) * (CANVAS_W / rect.width);
   }, { passive: false });
-  canvas.addEventListener('click', dropFruit);
-  canvas.addEventListener('touchend', (e) => { e.preventDefault(); dropFruit(); });
+  canvasMy.addEventListener('click', dropFruit);
+  canvasMy.addEventListener('touchend', (e) => { e.preventDefault(); dropFruit(); });
 
   // Timer
   timerInterval = setInterval(() => {
@@ -311,13 +305,13 @@ function startGame() {
     if (timeLeft <= 0) endGame();
   }, 1000);
 
-  // Game loop
   loop();
 }
 
 function loop() {
   if (!gameActive) return;
-  stepPhysics();
+  mergeQueue = [];
+  stepPhysics(myCircles);
   render();
   requestAnimationFrame(loop);
 }
@@ -330,16 +324,16 @@ function spawnCurrent() {
 }
 
 function setNextFruit() {
-  nextIdx = Math.floor(Math.random() * 3);
+  nextIdx = Math.floor(Math.random() * 5);
 }
 
 function dropFruit() {
   if (!gameActive || dropping) return;
   const f = FRUITS[current.index];
   const x = Math.max(f.radius + WALL + 2, Math.min(CANVAS_W - WALL - 2, mouseX));
-  addCircle(x, 50, f.radius, current.index);
+  addCircle(myCircles, x, 50, f.radius, current.index);
   dropping = true;
-  setTimeout(() => { dropping = false; setNextFruit(); spawnCurrent(); }, 400);
+  setTimeout(() => { dropping = false; setNextFruit(); spawnCurrent(); }, 700);
 }
 
 function endGame() {
@@ -363,6 +357,7 @@ function showResults() {
 
 function updateScoreDisplay() {
   document.getElementById('score-p1').textContent = score;
+  document.getElementById('score-p2').textContent = opponentScore;
 }
 
 function updateTimerDisplay() {
@@ -375,6 +370,11 @@ function updateTimerDisplay() {
 // RENDERING
 // ========================
 function render() {
+  renderBoard(ctxMy, myCircles, true);
+  renderBoard(ctxEnemy, enemyCircles, false);
+}
+
+function renderBoard(ctx, circles, isMy) {
   ctx.clearRect(0, 0, CANVAS_W, CANVAS_H);
 
   // Danger line
@@ -393,37 +393,31 @@ function render() {
 
   // Circles
   for (const c of circles) {
-    drawCircle(c.x, c.y, c.r, c.idx);
+    drawCircle(ctx, c.x, c.y, c.r, c.idx);
   }
 
-  // Current fruit
-  if (current && !dropping) {
+  // Current fruit (only on my board)
+  if (isMy && current && !dropping) {
     ctx.strokeStyle = 'rgba(255,255,255,0.15)';
     ctx.lineWidth = 1;
     ctx.setLineDash([4, 4]);
     ctx.beginPath(); ctx.moveTo(current.x, current.y + current.radius);
     ctx.lineTo(current.x, CANVAS_H - WALL); ctx.stroke();
     ctx.setLineDash([]);
-    drawCircle(current.x, current.y, current.radius, current.index);
+    drawCircle(ctx, current.x, current.y, current.radius, current.index);
   }
 }
 
-function drawCircle(x, y, r, idx) {
+function drawCircle(ctx, x, y, r, idx) {
   const f = FRUITS[idx];
-  // Shadow
   ctx.beginPath(); ctx.arc(x + 2, y + 2, r, 0, Math.PI * 2);
   ctx.fillStyle = 'rgba(0,0,0,0.2)'; ctx.fill();
-  // Gradient
   const g = ctx.createRadialGradient(x - r * 0.3, y - r * 0.3, r * 0.1, x, y, r);
   g.addColorStop(0, lighten(f.color, 40));
   g.addColorStop(1, f.color);
   ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2);
   ctx.fillStyle = g; ctx.fill();
   ctx.strokeStyle = 'rgba(0,0,0,0.2)'; ctx.lineWidth = 1.5; ctx.stroke();
-  // Emoji
-  ctx.font = `${r * 0.9}px serif`;
-  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-  ctx.fillText(f.label, x, y + 1);
 }
 
 function lighten(hex, amt) {
@@ -440,15 +434,38 @@ function lighten(hex, amt) {
 function handlePeerMessage(msg) {
   if (msg.type === 'merge') {
     opponentScore = msg.score;
-    document.getElementById('score-p2').textContent = opponentScore;
+    updateScoreDisplay();
   } else if (msg.type === 'game-over') {
     if (!gameActive) return;
     gameActive = false;
     clearInterval(timerInterval);
     opponentScore = msg.opponentScore;
-    document.getElementById('score-p2').textContent = opponentScore;
+    updateScoreDisplay();
     showResults();
     gameScreen.style.display = 'none';
     resultScreen.style.display = 'flex';
+  } else if (msg.type === 'drop') {
+    // Sync opponent's dropped fruit
+    addCircle(enemyCircles, msg.x, msg.y, FRUITS[msg.index].radius, msg.index);
+  } else if (msg.type === 'enemy-state') {
+    // Full state sync
+    enemyCircles = msg.circles;
   }
 }
+
+// Periodically send my state to opponent
+setInterval(() => {
+  if (gameActive && dataChannel && dataChannel.readyState === 'open') {
+    sendPeer({ type: 'my-state', circles: myCircles.map(c => ({ x: c.x, y: c.y, r: c.r, idx: c.idx })) });
+  }
+}, 500);
+
+// Handle enemy state
+const origHandlePeer = handlePeerMessage;
+handlePeerMessage = function(msg) {
+  if (msg.type === 'my-state') {
+    myCircles = msg.circles.map(c => ({ ...c, vx: 0, vy: 0 }));
+  } else {
+    origHandlePeer(msg);
+  }
+};

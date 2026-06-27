@@ -98,22 +98,24 @@
       display: none;
       flex-direction: column;
       align-items: center;
-      gap: 10px;
+      gap: 8px;
+      padding: 10px;
     }
     #game-header {
       display: flex;
       justify-content: space-between;
       align-items: center;
       width: 100%;
-      max-width: 500px;
+      max-width: 830px;
       padding: 10px 0;
+      gap: 10px;
     }
     .score-panel {
       background: #16213e;
       border-radius: 10px;
-      padding: 8px 20px;
+      padding: 8px 16px;
       text-align: center;
-      min-width: 120px;
+      min-width: 100px;
     }
     .score-panel .label { font-size: 0.8rem; color: #aaa; }
     .score-panel .value { font-size: 1.5rem; font-weight: bold; }
@@ -125,10 +127,33 @@
       min-width: 80px;
       text-align: center;
     }
-    #game-canvas {
+    #boards-container {
+      display: flex;
+      gap: 20px;
+      justify-content: center;
+      align-items: flex-start;
+    }
+    .board-wrapper {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 6px;
+    }
+    .board-label {
+      font-size: 0.9rem;
+      font-weight: bold;
+      color: #aaa;
+      padding: 4px 16px;
+      background: #16213e;
+      border-radius: 8px;
+    }
+    .board-label.you { color: #55efc4; border: 1px solid #55efc4; }
+    .board-label.enemy { color: #ff7675; border: 1px solid #ff7675; }
+    .board-wrapper canvas {
       border-radius: 12px;
       background: #0f3460;
-      box-shadow: 0 0 30px rgba(108, 92, 231, 0.3);
+      box-shadow: 0 0 20px rgba(108, 92, 231, 0.3);
+      cursor: crosshair;
     }
 
     /* RESULT SCREEN */
@@ -200,7 +225,16 @@
         <div class="value" id="score-p2">0</div>
       </div>
     </div>
-    <canvas id="game-canvas"></canvas>
+    <div id="boards-container">
+      <div class="board-wrapper">
+        <div class="board-label you">YOUR BOARD</div>
+        <canvas id="canvas-my"></canvas>
+      </div>
+      <div class="board-wrapper">
+        <div class="board-label enemy">OPPONENT</div>
+        <canvas id="canvas-enemy"></canvas>
+      </div>
+    </div>
   </div>
 
   <!-- RESULT -->
