@@ -191,6 +191,9 @@ let enemyCircles = [];
 let current = null;
 let dropping = false;
 let mouseX = CANVAS_W / 2;
+// Opponent's preview state (received via P2P)
+let enemyCurrent = null;
+let enemyDropping = false;
 let score = 0, opponentScore = 0;
 let timeLeft = GAME_TIME;
 let timerInterval = null;
@@ -309,11 +312,21 @@ function startGame() {
   canvasMy.addEventListener('mousemove', (e) => {
     const rect = canvasMy.getBoundingClientRect();
     mouseX = (e.clientX - rect.left) * (CANVAS_W / rect.width);
+    // Immediately send preview position for real-time updates
+    if (current && !dropping && dataChannel && dataChannel.readyState === 'open') {
+      const previewX = Math.max(current.radius + WALL, Math.min(CANVAS_W - WALL - current.radius, mouseX));
+      sendPeer({ type: 'preview', x: previewX, y: current.y, index: current.index, radius: current.radius });
+    }
   });
   canvasMy.addEventListener('touchmove', (e) => {
     e.preventDefault();
     const rect = canvasMy.getBoundingClientRect();
     mouseX = (e.touches[0].clientX - rect.left) * (CANVAS_W / rect.width);
+    // Immediately send preview position for real-time updates
+    if (current && !dropping && dataChannel && dataChannel.readyState === 'open') {
+      const previewX = Math.max(current.radius + WALL, Math.min(CANVAS_W - WALL - current.radius, mouseX));
+      sendPeer({ type: 'preview', x: previewX, y: current.y, index: current.index, radius: current.radius });
+    }
   }, { passive: false });
   canvasMy.addEventListener('click', dropFruit);
   canvasMy.addEventListener('touchend', (e) => { e.preventDefault(); dropFruit(); });
@@ -392,11 +405,11 @@ function updateTimerDisplay() {
 // RENDERING
 // ========================
 function render() {
-  renderBoard(ctxMy, myCircles, true);
-  renderBoard(ctxEnemy, enemyCircles, false);
+  renderBoard(ctxMy, myCircles, true, null);
+  renderBoard(ctxEnemy, enemyCircles, false, enemyCurrent, enemyDropping);
 }
 
-function renderBoard(ctx, circles, isMy) {
+function renderBoard(ctx, circles, isMy, previewCurrent, previewDropping) {
   ctx.clearRect(0, 0, CANVAS_W, CANVAS_H);
 
   // Danger line
@@ -418,7 +431,7 @@ function renderBoard(ctx, circles, isMy) {
     drawCircle(ctx, c.x, c.y, c.r, c.idx);
   }
 
-  // Current fruit (only on my board)
+  // Current fruit preview (my board)
   if (isMy && current && !dropping) {
     const previewX = Math.max(current.radius + WALL, Math.min(CANVAS_W - WALL - current.radius, mouseX));
     ctx.strokeStyle = 'rgba(255,255,255,0.15)';
@@ -428,6 +441,15 @@ function renderBoard(ctx, circles, isMy) {
     ctx.lineTo(previewX, CANVAS_H - WALL); ctx.stroke();
     ctx.setLineDash([]);
     drawCircle(ctx, previewX, current.y, current.radius, current.index);
+  }
+
+  // Opponent's current fruit preview (on enemy board)
+  if (!isMy && previewCurrent && !previewDropping) {
+    const f = FRUITS[previewCurrent.index];
+    const previewX = Math.max(previewCurrent.radius + WALL, Math.min(CANVAS_W - WALL - previewCurrent.radius, previewCurrent.x));
+    ctx.globalAlpha = 0.7;
+    drawCircle(ctx, previewX, previewCurrent.y, previewCurrent.radius, previewCurrent.index);
+    ctx.globalAlpha = 1.0;
   }
 }
 
@@ -473,15 +495,34 @@ function handlePeerMessage(msg) {
   } else if (msg.type === 'enemy-state') {
     // Full state sync
     enemyCircles = msg.circles;
+  } else if (msg.type === 'preview') {
+    // Real-time preview position update (from mouse move)
+    enemyCurrent = msg;
+    enemyDropping = false;
   } else if (msg.type === 'my-state') {
     // Sync opponent's full circle state (periodic updates)
     enemyCircles = msg.circles.map(c => ({ ...c, vx: 0, vy: 0, settled: false, id: Math.random() }));
+    // Also update opponent's preview state
+    if (msg.current !== undefined) {
+      enemyCurrent = msg.current;
+      enemyDropping = msg.dropping;
+    }
   }
 }
 
 // Periodically send my state to opponent
 setInterval(() => {
   if (gameActive && dataChannel && dataChannel.readyState === 'open') {
-    sendPeer({ type: 'my-state', circles: myCircles.map(c => ({ x: c.x, y: c.y, r: c.r, idx: c.idx })) });
+    // Calculate the preview X (same logic as rendering)
+    let previewX = null;
+    if (current && !dropping) {
+      previewX = Math.max(current.radius + WALL, Math.min(CANVAS_W - WALL - current.radius, mouseX));
+    }
+    sendPeer({
+      type: 'my-state',
+      circles: myCircles.map(c => ({ x: c.x, y: c.y, r: c.r, idx: c.idx })),
+      current: current ? { x: previewX, y: current.y, index: current.index, radius: current.radius } : null,
+      dropping: dropping
+    });
   }
 }, 500);
