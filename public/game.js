@@ -453,6 +453,13 @@ function loop() {
   if (myBlocked !== opponentBlocked) {
     opponentBlocked = myBlocked;
     sendPeer({ type: 'my-blocked', blocked: myBlocked });
+    
+    // Check instant win condition: if I'm locked and opponent has more points
+    if (myBlocked && opponentScore > score) {
+      sendPeer({ type: 'opponent-wins', myScore: score, opponentScore: opponentScore });
+      endGame();
+      return;
+    }
   }
   
   // Add points from merges and notify opponent
@@ -460,6 +467,12 @@ function loop() {
     score += pts;
     updateScoreDisplay();
     sendPeer({ type: 'merge', score: score });
+    
+    // Check instant win condition: if opponent is locked and I now have more points
+    if (opponentBlocked && score > opponentScore) {
+      endGame();
+      return;
+    }
   }
   render();
   requestAnimationFrame(loop);
@@ -619,6 +632,10 @@ function handlePeerMessage(msg) {
   if (msg.type === 'merge') {
     opponentScore = msg.score;
     updateScoreDisplay();
+    // Check if opponent is locked and I have more points → I win
+    if (opponentBlocked && score > opponentScore) {
+      endGame();
+    }
   } else if (msg.type === 'danger-over') {
     // Opponent exceeded the danger line - I win
     if (!gameActive) return;
@@ -639,10 +656,14 @@ function handlePeerMessage(msg) {
     gameScreen.style.display = 'none';
     resultScreen.style.display = 'flex';
   } else if (msg.type === 'game-over') {
+    // Only process game-over if game is still active.
     if (!gameActive) return;
     gameActive = false;
     clearInterval(timerInterval);
-    opponentScore = msg.opponentScore;
+    // game-over contains sender's perspective: myScore=their score, opponentScore=my score
+    // Swap them so they display correctly from receiver's perspective
+    score = msg.opponentScore;    // My score = sender's view of me
+    opponentScore = msg.myScore;  // Their score = sender's view of themselves
     updateScoreDisplay();
     showResults();
     gameScreen.style.display = 'none';
@@ -680,6 +701,23 @@ function handlePeerMessage(msg) {
   } else if (msg.type === 'opponent-blocked') {
     // Opponent is blocked from placing more fruits
     opponentBlocked = msg.blocked;
+    
+    // Check instant win: if opponent is locked and I have more points
+    if (opponentBlocked && score > opponentScore) {
+      endGame();
+    }
+  } else if (msg.type === 'opponent-wins') {
+    // Opponent triggered win because I'm locked and they have more points
+    if (!gameActive) return;
+    gameActive = false;
+    clearInterval(timerInterval);
+    // Update scores from opponent's perspective
+    score = msg.opponentScore;   // My score = opponent's view of me
+    opponentScore = msg.myScore; // Opponent's score = opponent's view of themselves
+    updateScoreDisplay();
+    showResults();
+    gameScreen.style.display = 'none';
+    resultScreen.style.display = 'flex';
   } else if (msg.type === 'preview') {
     // Real-time preview position update (from mouse move)
     enemyCurrent = msg;
