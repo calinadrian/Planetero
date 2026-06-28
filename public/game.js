@@ -200,6 +200,7 @@ let timerInterval = null;
 let gameActive = false;
 let nextIdx = 0;
 let mergeQueue = [];
+let opponentBlocked = false;
 
 function addCircle(arr, x, y, r, idx) {
   arr.push({ x, y, vx: 0, vy: 0, r, idx, settled: false, id: Math.random() });
@@ -210,8 +211,33 @@ function removeCircle(arr, id) {
   if (i !== -1) arr.splice(i, 1);
 }
 
-function stepPhysics(arr) {
+const DANGER_LINE = 80;
+
+function checkDangerLine(arr) {
+  // Check if any circle is settled above the danger line
   for (const c of arr) {
+    if (c.y - c.r < DANGER_LINE && c.settled) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function lockCirclesAboveLine(arr) {
+  // Lock (freeze) circles that are above the danger line so they can't move anymore
+  for (const c of arr) {
+    if (c.y - c.r < DANGER_LINE && c.settled) {
+      c.locked = true;
+      c.vx = 0;
+      c.vy = 0;
+    }
+  }
+}
+
+function stepPhysics(arr) {
+  // Skip physics for locked circles (but still apply gravity/walls to non-locked)
+  for (const c of arr) {
+    if (c.locked) continue;
     c.vy += GRAVITY;
     c.vx *= FRICTION;
     c.x += c.vx;
@@ -219,6 +245,7 @@ function stepPhysics(arr) {
   }
 
   for (const c of arr) {
+    if (c.locked) continue;
     if (c.y + c.r > CANVAS_H - WALL) {
       c.y = CANVAS_H - WALL - c.r;
       c.vy *= -RESTITUTION;
@@ -240,33 +267,58 @@ function stepPhysics(arr) {
   for (let i = 0; i < arr.length; i++) {
     for (let j = i + 1; j < arr.length; j++) {
       const a = arr[i], b = arr[j];
+      // Locked circles don't participate in collisions as movers, but act as solid obstacles
+      const aLocked = a.locked || false;
+      const bLocked = b.locked || false;
+      
       const dx = b.x - a.x, dy = b.y - a.y;
       const dist = Math.sqrt(dx * dx + dy * dy);
       const minDist = a.r + b.r;
 
       if (dist < minDist && dist > 0) {
-        if (a.idx === b.idx && !a.merged && !b.merged) {
+        if (a.idx === b.idx && !a.merged && !b.merged && !aLocked && !bLocked) {
           mergeQueue.push([arr, a, b]);
           continue;
         }
 
         const nx = dx / dist, ny = dy / dist;
         const overlap = minDist - dist;
-        a.x -= nx * overlap / 2;
-        a.y -= ny * overlap / 2;
-        b.x += nx * overlap / 2;
-        b.y += ny * overlap / 2;
+        
+        // Only move non-locked circles
+        if (!aLocked && !bLocked) {
+          a.x -= nx * overlap / 2;
+          a.y -= ny * overlap / 2;
+          b.x += nx * overlap / 2;
+          b.y += ny * overlap / 2;
 
-        const dvx = a.vx - b.vx, dvy = a.vy - b.vy;
-        const dvDotN = dvx * nx + dvy * ny;
-        if (dvDotN > 0) {
-          const massA = a.r * a.r, massB = b.r * b.r;
-          const totalMass = massA + massB;
-          const impulse = (1 + RESTITUTION) * dvDotN / totalMass;
-          a.vx -= impulse * massB * nx;
-          a.vy -= impulse * massB * ny;
-          b.vx += impulse * massA * nx;
-          b.vy += impulse * massA * ny;
+          const dvx = a.vx - b.vx, dvy = a.vy - b.vy;
+          const dvDotN = dvx * nx + dvy * ny;
+          if (dvDotN > 0) {
+            const massA = a.r * a.r, massB = b.r * b.r;
+            const totalMass = massA + massB;
+            const impulse = (1 + RESTITUTION) * dvDotN / totalMass;
+            a.vx -= impulse * massB * nx;
+            a.vy -= impulse * massB * ny;
+            b.vx += impulse * massA * nx;
+            b.vy += impulse * massA * ny;
+          }
+        } else if (!aLocked && bLocked) {
+          // Push non-locked circle out of locked circle
+          a.x -= nx * overlap;
+          const dvx = a.vx - b.vx, dvy = a.vy - b.vy;
+          const dvDotN = dvx * nx + dvy * ny;
+          if (dvDotN > 0) {
+            a.vx -= 2 * dvDotN * nx * 0.5;
+            a.vy -= 2 * dvDotN * ny * 0.5;
+          }
+        } else if (aLocked && !bLocked) {
+          b.x += nx * overlap;
+          const dvx = a.vx - b.vx, dvy = a.vy - b.vy;
+          const dvDotN = dvx * nx + dvy * ny;
+          if (dvDotN > 0) {
+            b.vx -= 2 * dvDotN * nx * 0.5;
+            b.vy -= 2 * dvDotN * ny * 0.5;
+          }
         }
       }
     }
@@ -288,6 +340,40 @@ function stepPhysics(arr) {
   }
   mergeQueue = [];
   return merged;
+}
+
+function settleCircles(arr) {
+  // Mark circles that are settled (resting on bottom or on top of other settled circles)
+  const settled = new Set();
+  let changed = true;
+  
+  while (changed) {
+    changed = false;
+    for (const c of arr) {
+      if (settled.has(c.id)) continue;
+      
+      // Check if circle is resting on the bottom wall
+      if (c.y + c.r >= CANVAS_H - WALL - 1 && Math.abs(c.vy) < 0.5) {
+        settled.add(c.id);
+        c.settled = true;
+        changed = true;
+        continue;
+      }
+      
+      // Check if circle is resting on settled circles
+      for (const other of arr) {
+        if (!settled.has(other.id)) continue;
+        const dx = c.x - other.x, dy = c.y - other.y;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        if (dist <= c.r + other.r + 1) {
+          settled.add(c.id);
+          c.settled = true;
+          changed = true;
+          break;
+        }
+      }
+    }
+  }
 }
 
 // ========================
@@ -349,6 +435,26 @@ function loop() {
   mergeQueue = [];
   const myMerged = stepPhysics(myCircles);
   stepPhysics(enemyCircles);
+  
+  // Settle circles and lock any that exceed the danger line
+  settleCircles(myCircles);
+  if (checkDangerLine(myCircles)) {
+    lockCirclesAboveLine(myCircles);
+  }
+  
+  // Settle circles and lock enemy circles that exceed the danger line
+  settleCircles(enemyCircles);
+  if (checkDangerLine(enemyCircles)) {
+    lockCirclesAboveLine(enemyCircles);
+  }
+  
+  // Check if opponent has locked circles (notify opponent about my blocked state)
+  const myBlocked = myCircles.some(c => c.locked);
+  if (myBlocked !== opponentBlocked) {
+    opponentBlocked = myBlocked;
+    sendPeer({ type: 'my-blocked', blocked: myBlocked });
+  }
+  
   // Add points from merges and notify opponent
   for (const pts of myMerged) {
     score += pts;
@@ -372,6 +478,12 @@ function setNextFruit() {
 
 function dropFruit() {
   if (!gameActive || dropping) return;
+  
+  // Check if any circles are locked (above the danger line)
+  // If so, prevent placing more fruits
+  const hasLockedCircles = myCircles.some(c => c.locked);
+  if (hasLockedCircles) return;
+  
   const f = FRUITS[current.index];
   const x = Math.max(f.radius + WALL, Math.min(CANVAS_W - WALL - f.radius, mouseX));
   addCircle(myCircles, x, 50, f.radius, current.index);
@@ -437,7 +549,7 @@ function renderBoard(ctx, circles, isMy, previewCurrent, previewDropping) {
 
   // Circles
   for (const c of circles) {
-    drawCircle(ctx, c.x, c.y, c.r, c.idx);
+    drawCircle(ctx, c.x, c.y, c.r, c.idx, c.locked || false);
   }
 
   // Current fruit preview (my board)
@@ -462,7 +574,7 @@ function renderBoard(ctx, circles, isMy, previewCurrent, previewDropping) {
   }
 }
 
-function drawCircle(ctx, x, y, r, idx) {
+function drawCircle(ctx, x, y, r, idx, locked) {
   const f = FRUITS[idx];
   ctx.beginPath(); ctx.arc(x + 2, y + 2, r, 0, Math.PI * 2);
   ctx.fillStyle = 'rgba(0,0,0,0.2)'; ctx.fill();
@@ -472,6 +584,24 @@ function drawCircle(ctx, x, y, r, idx) {
   ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2);
   ctx.fillStyle = g; ctx.fill();
   ctx.strokeStyle = 'rgba(0,0,0,0.2)'; ctx.lineWidth = 1.5; ctx.stroke();
+  
+  // Draw lock indicator for circles above the danger line
+  if (locked) {
+    ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(255,255,255,0.25)'; ctx.fill();
+    ctx.strokeStyle = 'rgba(255,255,255,0.6)'; ctx.lineWidth = 2; ctx.stroke();
+    
+    // Draw X mark to indicate locked
+    const markSize = r * 0.3;
+    ctx.strokeStyle = 'rgba(255,255,255,0.7)';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(x - markSize, y - markSize);
+    ctx.lineTo(x + markSize, y + markSize);
+    ctx.moveTo(x + markSize, y - markSize);
+    ctx.lineTo(x - markSize, y + markSize);
+    ctx.stroke();
+  }
 }
 
 function lighten(hex, amt) {
@@ -489,6 +619,25 @@ function handlePeerMessage(msg) {
   if (msg.type === 'merge') {
     opponentScore = msg.score;
     updateScoreDisplay();
+  } else if (msg.type === 'danger-over') {
+    // Opponent exceeded the danger line - I win
+    if (!gameActive) return;
+    gameActive = false;
+    clearInterval(timerInterval);
+    // My score stays, opponent gets 0 additional
+    updateScoreDisplay();
+    showResults();
+    gameScreen.style.display = 'none';
+    resultScreen.style.display = 'flex';
+  } else if (msg.type === 'opponent-danger') {
+    // I exceeded the danger line - opponent wins
+    if (!gameActive) return;
+    gameActive = false;
+    clearInterval(timerInterval);
+    updateScoreDisplay();
+    showResults();
+    gameScreen.style.display = 'none';
+    resultScreen.style.display = 'flex';
   } else if (msg.type === 'game-over') {
     if (!gameActive) return;
     gameActive = false;
@@ -504,6 +653,33 @@ function handlePeerMessage(msg) {
   } else if (msg.type === 'enemy-state') {
     // Full state sync
     enemyCircles = msg.circles;
+  } else if (msg.type === 'lock-update') {
+    // Sync locked circles state
+    if (msg.lockedIds) {
+      for (const id of msg.lockedIds) {
+        const circle = enemyCircles.find(c => c.id === id);
+        if (circle) {
+          circle.locked = true;
+          circle.vx = 0;
+          circle.vy = 0;
+        }
+      }
+    }
+  } else if (msg.type === 'my-locked-update') {
+    // Sync my locked circles to opponent
+    if (msg.lockedIds) {
+      for (const id of msg.lockedIds) {
+        const circle = myCircles.find(c => c.id === id);
+        if (circle) {
+          circle.locked = true;
+          circle.vx = 0;
+          circle.vy = 0;
+        }
+      }
+    }
+  } else if (msg.type === 'opponent-blocked') {
+    // Opponent is blocked from placing more fruits
+    opponentBlocked = msg.blocked;
   } else if (msg.type === 'preview') {
     // Real-time preview position update (from mouse move)
     enemyCurrent = msg;
@@ -517,6 +693,9 @@ function handlePeerMessage(msg) {
   }
 }
 
+// Track previously locked IDs to detect new locks
+let prevLockedIds = new Set();
+
 // Periodically send my state to opponent
 setInterval(() => {
   if (gameActive && dataChannel && dataChannel.readyState === 'open') {
@@ -525,9 +704,25 @@ setInterval(() => {
     if (current && !dropping) {
       previewX = Math.max(current.radius + WALL, Math.min(CANVAS_W - WALL - current.radius, mouseX));
     }
+    
+    // Find newly locked circles
+    const currentLockedIds = myCircles.filter(c => c.locked).map(c => c.id);
+    const newLockedIds = currentLockedIds.filter(id => !prevLockedIds.has(id));
+    if (newLockedIds.length > 0) {
+      sendPeer({ type: 'lock-update', lockedIds: newLockedIds });
+    }
+    prevLockedIds = new Set(currentLockedIds);
+    
+    // Sync opponent blocked status
+    const myBlocked = myCircles.some(c => c.locked);
+    if (myBlocked !== opponentBlocked) {
+      sendPeer({ type: 'my-blocked', blocked: myBlocked });
+      opponentBlocked = myBlocked;
+    }
+    
     sendPeer({
       type: 'my-state',
-      circles: myCircles.map(c => ({ x: c.x, y: c.y, vx: c.vx, vy: c.vy, r: c.r, idx: c.idx })),
+      circles: myCircles.map(c => ({ x: c.x, y: c.y, vx: c.vx, vy: c.vy, r: c.r, idx: c.idx, locked: c.locked })),
       current: current ? { x: previewX, y: current.y, index: current.index, radius: current.radius } : null,
       dropping: dropping
     });
